@@ -1447,6 +1447,32 @@ export default function App() {
                 </div>
 
                 <div className="p-6">
+                  {/* ปุ่มแยกแท็บปฏิทินระหว่างเครื่องทั่วไปและเครื่องเคลื่อนที่ */}
+                  <div className="flex items-center space-x-2 mb-5 bg-slate-100 p-1 rounded-xl border border-slate-200 print:hidden shadow-inner">
+                    <button
+                      onClick={() => { setSelectedMachine('general'); setSelectedCalendarRecord(null); }}
+                      className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center space-x-2 ${
+                        selectedMachine === 'general'
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                      }`}
+                    >
+                      <span className="text-sm">🖥️</span>
+                      <span>ปฏิทินเครื่องทั่วไป (General DR)</span>
+                    </button>
+                    <button
+                      onClick={() => { setSelectedMachine('portable'); setSelectedCalendarRecord(null); }}
+                      className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center space-x-2 ${
+                        selectedMachine === 'portable'
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                      }`}
+                    >
+                      <span className="text-sm">🛞</span>
+                      <span>ปฏิทินเครื่องเคลื่อนที่ (Portable DR)</span>
+                    </button>
+                  </div>
+
                   {/* Legend guide */}
                   <div className="flex flex-wrap items-center gap-4 mb-4 text-xs font-medium text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200/60">
                     <span className="text-slate-400">คำอธิบายสัญญลักษณ์:</span>
@@ -1484,8 +1510,8 @@ export default function App() {
                       const formattedMonth = (currentCalendarMonth + 1).toString().padStart(2, '0');
                       const dateStr = `${currentCalendarYear}-${formattedMonth}-${dayNumber.toString().padStart(2, '0')}`;
                       
-                      // Match date string to records list
-                      const dayRecord = records.find(r => r.date === dateStr);
+                      // Match date string and machine type to records list
+                      const dayRecord = records.find(r => r.date === dateStr && (r.machine || 'general') === selectedMachine);
                       const isSelected = selectedCalendarRecord?.date === dateStr;
 
                       return (
