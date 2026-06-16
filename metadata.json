@@ -1,0 +1,6 @@
+{
+  "name": "Digital X-ray Daily QC Form F1",
+  "description": "ระบบบันทึกการตรวจสอบเครื่องเอกซเรย์ประจำวันตามฟอร์ม F1 สำหรับงานประกันคุณภาพทางรังสีวิทยา",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
