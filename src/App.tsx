@@ -33,7 +33,8 @@ import {
   googleSignIn,
   googleSignOut,
   createAndPopulateSheet,
-  writeRecordsToSheet
+  writeRecordsToSheet,
+  readRecordsFromSheet
 } from './googleSheets';
 import SignatureModal from './components/SignatureModal';
 
@@ -225,6 +226,82 @@ export default function App() {
       setIsSyncingSheet(false);
     }
   };
+
+  const handleImportFromSheets = async () => {
+    if (!googleToken) {
+      triggerToast('กรุณาเชื่อมบัญชี Google ของท่านก่อนเพื่อดึงประวัติ', 'error');
+      return;
+    }
+    if (!syncedSpreadsheetId) {
+      triggerToast('ยังไม่มีไฟล์ระบบสำรองข้อมูลเชื่อมโยงในเซสชันนี้ กรุณาสร้างหรือระบุไอดีสเปรดชีตก่อน', 'error');
+      return;
+    }
+
+    setIsSyncingSheet(true);
+    triggerToast('กำลังติดต่อดึงไฟล์ข้อมูลจาก Google Sheets ประจำเครื่อง...', 'info');
+    try {
+      const fetched = await readRecordsFromSheet(googleToken, syncedSpreadsheetId);
+      if (fetched && fetched.length > 0) {
+        // Build map to merge (source of truth is Google Sheets, merge key: Date + Machine)
+        const mergedMap = new Map<string, DailyQCResult>();
+        
+        // Add existing local records
+        records.forEach(r => {
+          const key = `${r.date}-${r.machine || 'general'}`;
+          mergedMap.set(key, r);
+        });
+
+        // Add fetched records to overwrite/fill
+        fetched.forEach(r => {
+          const key = `${r.date}-${r.machine || 'general'}`;
+          mergedMap.set(key, r);
+        });
+
+        const mergedList = Array.from(mergedMap.values());
+        mergedList.sort((a, b) => b.date.localeCompare(a.date));
+
+        saveToLocalStorage(mergedList);
+        triggerToast(`ดึงและซิงก์ประวัติประเมินสำเร็จ! อัปโหลดกลับคืนมาแล้ว ${fetched.length} รายการ`, 'success');
+      } else {
+        triggerToast('ไม่พบรายการประเมินใดๆ ในแผ่นงาน Google Sheets ตัวเดิม', 'info');
+      }
+    } catch (err) {
+      console.error('Import from sheets failed:', err);
+      triggerToast('เกิดข้อผิดพลาดในการดึงข้อมูลจาก Google Sheets', 'error');
+    } finally {
+      setIsSyncingSheet(false);
+    }
+  };
+
+  // Silent automatic sync background merge on mount / googleToken load
+  useEffect(() => {
+    if (googleToken && syncedSpreadsheetId) {
+      readRecordsFromSheet(googleToken, syncedSpreadsheetId)
+        .then(fetched => {
+          if (fetched && fetched.length > 0) {
+            const mergedMap = new Map<string, DailyQCResult>();
+            // Use refs or current state
+            setRecords(prevRecords => {
+              prevRecords.forEach(r => {
+                const key = `${r.date}-${r.machine || 'general'}`;
+                mergedMap.set(key, r);
+              });
+              fetched.forEach(r => {
+                const key = `${r.date}-${r.machine || 'general'}`;
+                mergedMap.set(key, r);
+              });
+              const mergedList = Array.from(mergedMap.values());
+              mergedList.sort((a, b) => b.date.localeCompare(a.date));
+              localStorage.setItem('xray_qc_f1_records', JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
+        })
+        .catch(err => {
+          console.warn('Quiet load from sheets background failed', err);
+        });
+    }
+  }, [googleToken, syncedSpreadsheetId]);
 
   const handlePrevMonth = () => {
     if (currentCalendarMonth === 0) {
@@ -1388,6 +1465,18 @@ export default function App() {
                           <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
                           <span>{isSyncingSheet ? 'กำลังซิงก์...' : syncedSpreadsheetId ? 'ซิงก์ปรับปรุงชีต' : 'สร้างและเชื่อมชีต'}</span>
                         </button>
+
+                        {syncedSpreadsheetId && (
+                          <button
+                            onClick={handleImportFromSheets}
+                            disabled={isSyncingSheet}
+                            className="px-3.5 py-2 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-450 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-all shadow-md shadow-sky-50 shrink-0 cursor-pointer animate-pulse"
+                            title="ดึงประวัติการประเมินจาก Google Sheets กลับคืนมาในเครื่องนี้"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>ดึงข้อมูลจาก Sheets</span>
+                          </button>
+                        )}
 
                         {syncedSpreadsheetId && (
                           <button

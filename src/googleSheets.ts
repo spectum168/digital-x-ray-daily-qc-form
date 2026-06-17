@@ -415,3 +415,105 @@ export const writeRecordsToSheet = async (
   }
 };
 
+/**
+ * Reads records from a Google Sheet and returns parsed DailyQCResult list.
+ */
+export const readRecordsFromSheet = async (
+  accessToken: string,
+  spreadsheetId: string
+): Promise<DailyQCResult[]> => {
+  const loadedRecords: DailyQCResult[] = [];
+
+  const targets = [
+    {
+      machine: 'general' as const,
+      range: `'เครื่องทั่วไป (General DR)'!A7:Z500`,
+      items: GENERAL_QC_ITEMS
+    },
+    {
+      machine: 'portable' as const,
+      range: `'เครื่องเคลื่อนที่ (Portable DR)'!A7:Z500`,
+      items: PORTABLE_QC_ITEMS
+    }
+  ];
+
+  for (const target of targets) {
+    try {
+      const response = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(target.range)}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`
+          }
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const rows = data.values as string[][];
+        if (rows && rows.length > 0) {
+          rows.forEach(row => {
+            // Must have at least date and time and inspector
+            if (row.length >= 4 && row[0] && row[0].includes('-')) {
+              const date = row[0].trim();
+              const time = row[1]?.trim() || '08:00';
+              const inspector = row[2]?.trim() || 'ผู้ตรวจ';
+              const roleDisplay = row[3]?.trim();
+              
+              let role = 'พนง';
+              if (roleDisplay === 'เจ้าพนักงาน') role = 'จพง';
+              else if (roleDisplay === 'คนงาน') role = 'คนงาน';
+
+              // Results map
+              const results: { [itemId: number]: 'ผ่าน' | 'ไม่ผ่าน' } = {};
+              target.items.forEach((item, index) => {
+                const cellVal = row[4 + index]?.trim() || '';
+                results[item.id] = cellVal === 'ไม่ผ่าน' ? 'ไม่ผ่าน' : 'ผ่าน';
+              });
+
+              // End of items
+              const netResultIdx = 4 + target.items.length;
+              const netResult = row[netResultIdx]?.trim() || '';
+              const hasFailures = netResult.includes('ไม่ผ่าน');
+
+              const notesIdx = netResultIdx + 1;
+              const notes = row[notesIdx]?.trim() === '-' ? '' : (row[notesIdx]?.trim() || '');
+
+              const timestampStr = `${date}T${time}:00`;
+              let timestamp = Date.now();
+              try {
+                timestamp = new Date(timestampStr).getTime();
+                if (isNaN(timestamp)) {
+                  timestamp = Date.now();
+                }
+              } catch (e) {}
+
+              // Readiness checks
+              const readinessStatus = hasFailures ? 'รอซ่อมแซม' : 'ใช้งานได้ปกติ';
+
+              loadedRecords.push({
+                date,
+                time,
+                inspector,
+                // @ts-ignore
+                role,
+                results,
+                notes,
+                hasFailures,
+                timestamp,
+                machine: target.machine,
+                readinessStatus
+              });
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`ล้มเหลวในการดึงข้อมูลชีตของเครื่อง ${target.machine}`, err);
+    }
+  }
+
+  return loadedRecords;
+};
+
+

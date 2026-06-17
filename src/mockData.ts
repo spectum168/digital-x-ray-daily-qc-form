@@ -1,6 +1,6 @@
 import { DailyQCResult, InspectorRole } from './types';
 
-export function generateMockRecords(): DailyQCResult[] {
+export function generateMockRecords(targetYear?: number, targetMonth?: number): DailyQCResult[] {
   const records: DailyQCResult[] = [];
   const inspectors = [
     { name: 'สิทธิศักดิ์ เลาหกุล', role: 'จพง' as InspectorRole },
@@ -9,9 +9,19 @@ export function generateMockRecords(): DailyQCResult[] {
     { name: 'ธีรพล เตจ๊ะเสาร์', role: 'พนง' as InspectorRole }
   ];
 
-  // 1. Generate General X-ray records (May 1st to May 19th, 2026)
-  for (let day = 1; day <= 19; day++) {
-    const dateStr = `2026-05-${day.toString().padStart(2, '0')}`;
+  const now = new Date();
+  const year = targetYear !== undefined ? targetYear : now.getFullYear();
+  const month = targetMonth !== undefined ? targetMonth : (now.getMonth() + 1); // 1-based
+
+  const yearStr = year.toString();
+  const monthStr = month.toString().padStart(2, '0');
+
+  // Let's generate records from Day 1 to Day 15 of the target month
+  const limitDay = 15;
+
+  // 1. Generate General X-ray records
+  for (let day = 1; day <= limitDay; day++) {
+    const dateStr = `${yearStr}-${monthStr}-${day.toString().padStart(2, '0')}`;
     const inspector = inspectors[day % inspectors.length];
     
     // Day 12 will have a fail condition
@@ -40,12 +50,12 @@ export function generateMockRecords(): DailyQCResult[] {
     });
   }
 
-  // 2. Generate Portable X-ray records (May 1st to May 19th, 2026)
-  for (let day = 1; day <= 19; day++) {
-    const dateStr = `2026-05-${day.toString().padStart(2, '0')}`;
+  // 2. Generate Portable X-ray records
+  for (let day = 1; day <= limitDay; day++) {
+    const dateStr = `${yearStr}-${monthStr}-${day.toString().padStart(2, '0')}`;
     const inspector = inspectors[(day + 1) % inspectors.length];
     
-    // Day 7 will have a fail condition for Portable (แบตเสื่อมแต่ยังถ่ายภาพได้ / ยางหุ้มล้อหลุด)
+    // Day 7 lives and 14 have fail conditions for Portable
     const isDay7 = day === 7;
     const isDay14 = day === 14;
     
@@ -84,3 +94,4 @@ export function generateMockRecords(): DailyQCResult[] {
 
   return records;
 }
+
