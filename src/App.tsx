@@ -23,7 +23,11 @@ import {
   LogOut,
   ExternalLink,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  CalendarRange,
+  Edit3,
+  Eye,
+  CheckCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MANDATORY_QC_ITEMS, GENERAL_QC_ITEMS, PORTABLE_QC_ITEMS, DailyQCResult, InspectorRole } from './types';
@@ -37,6 +41,8 @@ import {
   readRecordsFromSheet
 } from './googleSheets';
 import SignatureModal from './components/SignatureModal';
+import DayDetailModal from './components/DayDetailModal';
+import BatchRecordModal from './components/BatchRecordModal';
 
 const getTodayDateString = () => {
   const now = new Date();
@@ -117,6 +123,17 @@ export default function App() {
   const [isSigModalOpen, setIsSigModalOpen] = useState<boolean>(false);
   const [sigModalType, setSigModalType] = useState<'operator' | 'physicist' | null>(null);
   const [isExportingPDF, setIsExportingPDF] = useState<boolean>(false);
+
+  // Batch multi-select & Day Detail / Edit modes
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState<boolean>(false);
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState<boolean>(false);
+  const [viewingDayRecord, setViewingDayRecord] = useState<DailyQCResult | null>(null);
+  const [editingRecordInfo, setEditingRecordInfo] = useState<{
+    isEditing: boolean;
+    originalDate: string;
+    originalMachine: 'general' | 'portable';
+  } | null>(null);
 
   // Initialize data (try to load from local storage or bootstrap with mock data)
   useEffect(() => {
@@ -336,10 +353,26 @@ export default function App() {
     }, 4000);
   };
 
+  // Helper to sync records with Google Sheets if connected
+  const syncRecordsToSheetIfConnected = async (updated: DailyQCResult[], machine: 'general' | 'portable') => {
+    if (googleToken && syncedSpreadsheetId) {
+      const thMonth = thMonthNames[currentCalendarMonth];
+      const yearBE = currentCalendarYear + 543;
+      try {
+        await writeRecordsToSheet(googleToken, syncedSpreadsheetId, updated, thMonth, yearBE, machine);
+        const syncTimeStr = new Date().toLocaleTimeString('th-TH');
+        setLastSyncTime(syncTimeStr);
+        localStorage.setItem('xray_f1_last_sync_time', syncTimeStr);
+      } catch (err) {
+        console.error('Auto sync failed:', err);
+      }
+    }
+  };
+
   // Determine if any check item is "ไม่ผ่าน"
   const hasAnyFailure = Object.values(itemStatuses).some(status => status === 'ไม่ผ่าน');
 
-  // Submit form handler
+  // Submit form handler (supports both new submission and single-day edit mode)
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -362,17 +395,30 @@ export default function App() {
       readinessStatus: formReadinessStatus
     };
 
-    // Check if a record already exists for this date and machine. If so, replace it or update
-    const existingIndex = records.findIndex(r => r.date === formDate && (r.machine || 'general') === formMachine);
     let updated: DailyQCResult[];
-    
-    if (existingIndex >= 0) {
-      updated = [...records];
-      updated[existingIndex] = newRecord;
-      triggerToast(`อัปเดตบันทึกการตรวจสอบของวันที่ ${formDate} สำหรับเครื่อง ${formMachine === 'portable' ? 'Portable' : 'General'} เรียบร้อยแล้ว`, 'success');
+
+    if (editingRecordInfo?.isEditing) {
+      // Remove original record if it existed
+      const filtered = records.filter(
+        r => !(r.date === editingRecordInfo.originalDate && (r.machine || 'general') === editingRecordInfo.originalMachine)
+      );
+      // Remove any matching new date/machine record to prevent duplicates
+      const withoutConflict = filtered.filter(
+        r => !(r.date === formDate && (r.machine || 'general') === formMachine)
+      );
+      updated = [newRecord, ...withoutConflict];
+      setEditingRecordInfo(null);
+      triggerToast(`บันทึกการแก้ไขข้อมูลเฉพาะวัน (${formDate}) เครื่อง ${formMachine === 'portable' ? 'Portable' : 'General'} เรียบร้อยแล้ว`, 'success');
     } else {
-      updated = [newRecord, ...records];
-      triggerToast(`บันทึกการตรวจสอบประจำวันที่ ${formDate} สำหรับเครื่อง ${formMachine === 'portable' ? 'Portable' : 'General'} สำเร็จ`, 'success');
+      const existingIndex = records.findIndex(r => r.date === formDate && (r.machine || 'general') === formMachine);
+      if (existingIndex >= 0) {
+        updated = [...records];
+        updated[existingIndex] = newRecord;
+        triggerToast(`อัปเดตบันทึกการตรวจสอบของวันที่ ${formDate} สำหรับเครื่อง ${formMachine === 'portable' ? 'Portable' : 'General'} เรียบร้อยแล้ว`, 'success');
+      } else {
+        updated = [newRecord, ...records];
+        triggerToast(`บันทึกการตรวจสอบประจำวันที่ ${formDate} สำหรับเครื่อง ${formMachine === 'portable' ? 'Portable' : 'General'} สำเร็จ`, 'success');
+      }
     }
 
     // Sort records descending by date
@@ -380,22 +426,7 @@ export default function App() {
     saveToLocalStorage(updated);
 
     // If connected to Google Sheets, auto-sync in the background!
-    if (googleToken && syncedSpreadsheetId) {
-      const thMonth = thMonthNames[currentCalendarMonth];
-      const yearBE = currentCalendarYear + 543;
-      
-      writeRecordsToSheet(googleToken, syncedSpreadsheetId, updated, thMonth, yearBE, formMachine)
-        .then(() => {
-          triggerToast('ออโต้ซิงก์ข้อมูลไปที่แผ่นงาน Google Sheets สำเร็จ', 'success');
-          const syncTimeStr = new Date().toLocaleTimeString('th-TH');
-          setLastSyncTime(syncTimeStr);
-          localStorage.setItem('xray_f1_last_sync_time', syncTimeStr);
-        })
-        .catch((err) => {
-          console.error('Auto-sync failed:', err);
-          triggerToast('ตรวจซิงก์ข้อมูลอัตโนมัติไม่สำเร็จชั่วคราว', 'info');
-        });
-    }
+    syncRecordsToSheetIfConnected(updated, formMachine);
 
     // Set selectedMachine to view the machine we just logged
     setSelectedMachine(formMachine);
@@ -419,9 +450,24 @@ export default function App() {
     setFormNotes(record.notes);
     setFormMachine(record.machine || 'general');
     setFormReadinessStatus(record.readinessStatus || (record.hasFailures ? 'รอซ่อมแซม' : 'ใช้งานได้ปกติ'));
+    setEditingRecordInfo({
+      isEditing: true,
+      originalDate: record.date,
+      originalMachine: record.machine || 'general',
+    });
     setActiveTab('form');
     setSelectedCalendarRecord(null);
     triggerToast(`โหลดข้อมูลเครื่อง ${record.machine === 'portable' ? 'Portable' : 'General'} วันที่ ${record.date} พร้อมแก้ไข`, 'info');
+  };
+
+  // Cancel edit mode
+  const handleCancelEdit = () => {
+    setEditingRecordInfo(null);
+    setFormDate(getTodayDateString());
+    setFormNotes('');
+    setItemStatuses(getDefaultStatuses(formMachine));
+    setFormReadinessStatus('ใช้งานได้ปกติ');
+    triggerToast('ยกเลิกโหมดแก้ไขเรียบร้อยแล้ว', 'info');
   };
 
   // Delete handler
@@ -431,7 +477,113 @@ export default function App() {
       saveToLocalStorage(updated);
       setSelectedCalendarRecord(null);
       triggerToast(`ลบข้อมูล QC วันที่ ${date} เรียบร้อยแล้ว`, 'info');
+      syncRecordsToSheetIfConnected(updated, machine);
     }
+  };
+
+  // Batch Multi-Select Handlers
+  const toggleDateSelection = (dateStr: string) => {
+    setSelectedDates(prev => 
+      prev.includes(dateStr) 
+        ? prev.filter(d => d !== dateStr) 
+        : [...prev, dateStr].sort()
+    );
+  };
+
+  const handleRemoveBatchDate = (dateStr: string) => {
+    setSelectedDates(prev => prev.filter(d => d !== dateStr));
+  };
+
+  const getEmptyDaysInMonth = () => {
+    const emptyDates: string[] = [];
+    const formattedMonth = (currentCalendarMonth + 1).toString().padStart(2, '0');
+    for (let day = 1; day <= daysInMonthCount; day++) {
+      const dStr = `${currentCalendarYear}-${formattedMonth}-${day.toString().padStart(2, '0')}`;
+      const hasRec = records.some(r => r.date === dStr && (r.machine || 'general') === selectedMachine);
+      if (!hasRec) {
+        emptyDates.push(dStr);
+      }
+    }
+    return emptyDates;
+  };
+
+  const getEmptyWeekdaysInMonth = () => {
+    const emptyWeekdays: string[] = [];
+    const formattedMonth = (currentCalendarMonth + 1).toString().padStart(2, '0');
+    for (let day = 1; day <= daysInMonthCount; day++) {
+      const dateObj = new Date(currentCalendarYear, currentCalendarMonth, day);
+      const dayOfWeek = dateObj.getDay();
+      // Monday (1) through Friday (5)
+      if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+        const dStr = `${currentCalendarYear}-${formattedMonth}-${day.toString().padStart(2, '0')}`;
+        const hasRec = records.some(r => r.date === dStr && (r.machine || 'general') === selectedMachine);
+        if (!hasRec) {
+          emptyWeekdays.push(dStr);
+        }
+      }
+    }
+    return emptyWeekdays;
+  };
+
+  const handleSelectAllEmptyInMonth = () => {
+    const empties = getEmptyDaysInMonth();
+    setSelectedDates(empties);
+    triggerToast(`เลือกวันที่ว่างทั้งหมด ${empties.length} วันในเดือนนี้`, 'info');
+  };
+
+  const handleSelectWeekdaysEmptyInMonth = () => {
+    const weekdays = getEmptyWeekdaysInMonth();
+    setSelectedDates(weekdays);
+    triggerToast(`เลือกเฉพาะวันทำการ (จันทร์-ศุกร์) ที่ยังว่าง ${weekdays.length} วัน`, 'info');
+  };
+
+  const handleConfirmBatchSave = async (batchData: {
+    dates: string[];
+    machine: 'general' | 'portable';
+    inspector: string;
+    role: string;
+    time: string;
+    statusPreset: 'all_pass' | 'await_repair';
+    notes: string;
+  }) => {
+    const items = batchData.machine === 'portable' ? PORTABLE_QC_ITEMS : GENERAL_QC_ITEMS;
+    const isFail = batchData.statusPreset === 'await_repair';
+
+    const newBatchRecords: DailyQCResult[] = batchData.dates.map((dateStr) => {
+      const results: { [itemId: number]: 'ผ่าน' | 'ไม่ผ่าน' } = {};
+      items.forEach((item, index) => {
+        results[item.id] = isFail && index === 0 ? 'ไม่ผ่าน' : 'ผ่าน';
+      });
+
+      return {
+        date: dateStr,
+        time: batchData.time,
+        inspector: batchData.inspector,
+        role: batchData.role as InspectorRole,
+        results,
+        notes: batchData.notes || (isFail ? 'บันทึกสถานะรอซ่อมแซมย้อนหลัง' : 'บันทึกผลตรวจสอบผ่านเกณฑ์ย้อนหลัง'),
+        hasFailures: isFail,
+        timestamp: new Date(`${dateStr}T${batchData.time}:00`).getTime(),
+        machine: batchData.machine,
+        readinessStatus: isFail ? 'รอซ่อมแซม' : 'ใช้งานได้ปกติ',
+      };
+    });
+
+    const batchDatesSet = new Set(batchData.dates);
+    const retainedRecords = records.filter(
+      r => !(batchDatesSet.has(r.date) && (r.machine || 'general') === batchData.machine)
+    );
+    const updated = [...newBatchRecords, ...retainedRecords];
+    updated.sort((a, b) => b.date.localeCompare(a.date));
+
+    saveToLocalStorage(updated);
+    setSelectedMachine(batchData.machine);
+    setSelectedDates([]);
+    setIsBatchModalOpen(false);
+    setIsMultiSelectMode(false);
+
+    triggerToast(`บันทึกผลการตรวจสอบย้อนหลัง ${newBatchRecords.length} วันเรียบร้อยแล้ว`, 'success');
+    await syncRecordsToSheetIfConnected(updated, batchData.machine);
   };
 
   // Clear all and restore mock data for testing
@@ -586,7 +738,7 @@ export default function App() {
     const [yearStr, monthStr] = r.date.split('-');
     const rYear = parseInt(yearStr);
     const rMonth = parseInt(monthStr) - 1; // 0-based month
-    return rMonth === currentCalendarMonth && rYear === currentCalendarYear;
+    return rMonth === currentCalendarMonth && rYear === currentCalendarYear && (r.machine || 'general') === selectedMachine;
   });
 
   const totalRegisteredDays = currentMonthRecords.length;
@@ -863,6 +1015,37 @@ export default function App() {
                 </div>
 
                 <div className="p-6 space-y-6">
+                  {/* Edit mode active banner */}
+                  {editingRecordInfo?.isEditing && (
+                    <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                      <div className="flex items-start sm:items-center space-x-3">
+                        <div className="p-2 bg-amber-500 text-white rounded-lg shrink-0">
+                          <Edit3 className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <span className="font-extrabold text-amber-950 text-sm">
+                              กำลังอยู่ในโหมดแก้ไขข้อมูลเฉพาะวัน
+                            </span>
+                            <span className="text-[11px] font-mono bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded font-bold">
+                              {editingRecordInfo.originalDate}
+                            </span>
+                          </div>
+                          <p className="text-xs text-amber-800 mt-0.5">
+                            เครื่อง: <strong>{editingRecordInfo.originalMachine === 'portable' ? 'Portable DR (13 จุด)' : 'General DR (6 จุด)'}</strong> • ปรับเปลี่ยนรายการจุดตรวจที่ไม่ผ่าน หรือระบุหมายเหตุแจ้งซ่อม แล้วกดบันทึกผลการแก้ไขด้านล่าง
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCancelEdit}
+                        className="self-end sm:self-center px-3.5 py-1.5 text-xs font-bold text-amber-900 bg-amber-200 hover:bg-amber-300 rounded-lg transition-colors cursor-pointer shrink-0"
+                      >
+                        ✕ ยกเลิกโหมดแก้ไข
+                      </button>
+                    </div>
+                  )}
+
                   {/* Metadata and Inspector Section */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 bg-slate-50/50 p-4 rounded-xl border border-slate-200/60">
                     
@@ -1229,14 +1412,23 @@ export default function App() {
 
                     <button
                       type="submit"
-                      className={`w-full sm:w-auto px-6 py-3 rounded-xl font-bold text-white shadow-md transition-all active:scale-95 ${
+                      className={`w-full sm:w-auto px-6 py-3 rounded-xl font-bold text-white shadow-md transition-all active:scale-95 flex items-center justify-center space-x-2 ${
                         hasAnyFailure 
                           ? 'bg-rose-600 hover:bg-rose-700 hover:shadow-rose-300/40' 
                           : 'bg-blue-600 hover:bg-blue-700 hover:shadow-blue-300/40'
                       }`}
                       id="form-submit-btn"
                     >
-                      {records.some(r => r.date === formDate) ? 'อัปเดตและบันทึกประวัติ' : 'บันทึกรายการประจำวันนี้'}
+                      {editingRecordInfo?.isEditing ? (
+                        <>
+                          <Edit3 className="w-4 h-4" />
+                          <span>💾 บันทึกผลการแก้ไข (Update Record)</span>
+                        </>
+                      ) : records.some(r => r.date === formDate && (r.machine || 'general') === formMachine) ? (
+                        'อัปเดตและบันทึกประวัติ'
+                      ) : (
+                        'บันทึกรายการประจำวันนี้'
+                      )}
                     </button>
                   </div>
 
@@ -1506,7 +1698,7 @@ export default function App() {
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" id="qc-monthly-calendar-card">
                 
                 {/* Month Navigator Header */}
-                <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+                <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center space-x-2">
                     <CalendarIcon className="w-5 h-5 text-blue-600" />
                     <h3 className="font-bold text-slate-900">
@@ -1514,30 +1706,52 @@ export default function App() {
                     </h3>
                   </div>
 
-                  <div className="flex items-center space-x-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Multi-Select Toggle Button */}
                     <button
-                      onClick={handlePrevMonth}
-                      className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-600 hover:text-slate-900 transition-all cursor-pointer bg-white border border-slate-200 flex items-center justify-center hover:shadow-sm"
-                      title="เดือนก่อนหน้า"
+                      type="button"
+                      onClick={() => {
+                        setIsMultiSelectMode(!isMultiSelectMode);
+                        if (isMultiSelectMode) {
+                          setSelectedDates([]);
+                        }
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                        isMultiSelectMode
+                          ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-400'
+                          : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                      }`}
+                      id="btn-toggle-multi-select"
                     >
-                      <ChevronLeft className="w-4 h-4" />
+                      <CalendarRange className="w-3.5 h-3.5" />
+                      <span>{isMultiSelectMode ? 'ปิดโหมดเลือกหลายวัน' : 'ติ๊กเลือกหลายวัน (บันทึกย้อนหลัง)'}</span>
                     </button>
-                    <span className="text-sm font-extrabold text-blue-750 bg-blue-50/70 border border-blue-150 px-4 py-1.5 rounded-lg font-mono min-w-[150px] text-center shadow-inner">
-                      {thMonthNames[currentCalendarMonth]} พ.ศ. {currentCalendarYear + 543}
-                    </span>
-                    <button
-                      onClick={handleNextMonth}
-                      className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-600 hover:text-slate-900 transition-all cursor-pointer bg-white border border-slate-200 flex items-center justify-center hover:shadow-sm"
-                      title="เดือนถัดไป"
-                    >
-                      <ChevronRight className="w-4 h-4" />
-                    </button>
+
+                    <div className="flex items-center space-x-1">
+                      <button
+                        onClick={handlePrevMonth}
+                        className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-600 hover:text-slate-900 transition-all cursor-pointer bg-white border border-slate-200 flex items-center justify-center hover:shadow-sm"
+                        title="เดือนก่อนหน้า"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-sm font-extrabold text-blue-750 bg-blue-50/70 border border-blue-150 px-4 py-1.5 rounded-lg font-mono min-w-[150px] text-center shadow-inner">
+                        {thMonthNames[currentCalendarMonth]} พ.ศ. {currentCalendarYear + 543}
+                      </span>
+                      <button
+                        onClick={handleNextMonth}
+                        className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-600 hover:text-slate-900 transition-all cursor-pointer bg-white border border-slate-200 flex items-center justify-center hover:shadow-sm"
+                        title="เดือนถัดไป"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 <div className="p-6">
                   {/* ปุ่มแยกแท็บปฏิทินระหว่างเครื่องทั่วไปและเครื่องเคลื่อนที่ */}
-                  <div className="flex items-center space-x-2 mb-5 bg-slate-100 p-1 rounded-xl border border-slate-200 print:hidden shadow-inner">
+                  <div className="flex items-center space-x-2 mb-4 bg-slate-100 p-1 rounded-xl border border-slate-200 print:hidden shadow-inner">
                     <button
                       onClick={() => { setSelectedMachine('general'); setSelectedCalendarRecord(null); }}
                       className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center space-x-2 ${
@@ -1562,20 +1776,76 @@ export default function App() {
                     </button>
                   </div>
 
+                  {/* Batch Selection Action Toolbar (Active in Multi-Select Mode) */}
+                  {isMultiSelectMode && (
+                    <div className="mb-4 p-4 rounded-xl bg-blue-50/90 border border-blue-200 text-xs space-y-3 shadow-xs">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2">
+                          <CheckCheck className="w-4 h-4 text-blue-600" />
+                          <span className="font-bold text-blue-900">
+                            โหมดติ๊กเลือกวันที่ย้อนหลัง: เลือกแล้ว {selectedDates.length} วัน
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={handleSelectAllEmptyInMonth}
+                            className="px-2.5 py-1 bg-white hover:bg-blue-100 text-blue-800 border border-blue-300 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                          >
+                            เลือกวันที่ยังว่างทั้งหมด ({getEmptyDaysInMonth().length} วัน)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSelectWeekdaysEmptyInMonth}
+                            className="px-2.5 py-1 bg-white hover:bg-blue-100 text-blue-800 border border-blue-300 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                          >
+                            เลือกเฉพาะวันทำการ จ.-ศ. ({getEmptyWeekdaysInMonth().length} วัน)
+                          </button>
+                          {selectedDates.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDates([])}
+                              className="px-2 py-1 text-slate-500 hover:text-slate-800 text-xs font-semibold cursor-pointer"
+                            >
+                              ล้างที่เลือก
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {selectedDates.length > 0 && (
+                        <div className="pt-2 border-t border-blue-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <span className="text-[11px] text-blue-800">
+                            พร้อมบันทึกผลตรวจสอบเครื่อง <strong>{selectedMachine === 'portable' ? 'Portable DR' : 'General DR'}</strong> ให้กับ {selectedDates.length} วันที่เลือก
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setIsBatchModalOpen(true)}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-97 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-md shadow-blue-200 cursor-pointer transition-all"
+                            id="btn-open-batch-record"
+                          >
+                            <CheckCheck className="w-4 h-4" />
+                            <span>บันทึกย้อนหลังพร้อมกัน ({selectedDates.length} วัน)</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Legend guide */}
                   <div className="flex flex-wrap items-center gap-4 mb-4 text-xs font-medium text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200/60">
                     <span className="text-slate-400">คำอธิบายสัญญลักษณ์:</span>
                     <span className="flex items-center">
                       <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 text-white flex items-center justify-center mr-1 text-[8px] font-bold">✓</span>
-                      ผ่านเกณฑ์ทั้งหมด (Pass)
+                      ผ่านเกณฑ์ทั้งหมด (คลิกเพื่อดูรายละเอียด/แก้ไข)
                     </span>
                     <span className="flex items-center">
                       <span className="w-3.5 h-3.5 rounded-full bg-rose-600 text-white flex items-center justify-center mr-1 text-[8px] font-bold">!</span>
-                      พบจุดบกพร่อง/ไม่ผ่าน (Fail)
+                      พบจุดบกพร่อง/รอซ่อม (คลิกเพื่อแก้ไข)
                     </span>
                     <span className="flex items-center">
                       <span className="w-3.5 h-3.5 rounded-full bg-slate-100 border border-slate-300 mr-1"></span>
-                      ยังไม่มีข้อมูลตรวจ (No Record)
+                      ยังไม่มีข้อมูลตรวจ (คลิกเพื่อเริ่มบันทึก)
                     </span>
                   </div>
 
@@ -1601,42 +1871,56 @@ export default function App() {
                       
                       // Match date string and machine type to records list
                       const dayRecord = records.find(r => r.date === dateStr && (r.machine || 'general') === selectedMachine);
-                      const isSelected = selectedCalendarRecord?.date === dateStr;
+                      const isCheckedInMulti = selectedDates.includes(dateStr);
 
                       return (
                         <button
                           key={`day-${dayNumber}`}
                           onClick={() => {
-                            if (dayRecord) {
-                              setSelectedCalendarRecord(dayRecord);
+                            if (isMultiSelectMode) {
+                              toggleDateSelection(dateStr);
                             } else {
-                              // Trigger state pre-filling for this date to record as standard
-                              setSelectedCalendarRecord(null);
-                              setFormDate(dateStr);
-                              setActiveTab('form');
-                              triggerToast(`เลือกบันทึกผลงานของวันที่ ${dateStr} เรียบร้อย`, 'info');
+                              if (dayRecord) {
+                                setViewingDayRecord(dayRecord);
+                              } else {
+                                setFormDate(dateStr);
+                                setActiveTab('form');
+                                triggerToast(`เลือกบันทึกผลงานของวันที่ ${dateStr} เรียบร้อย`, 'info');
+                              }
                             }
                           }}
-                          className={`aspect-square rounded-xl p-2 flex flex-col justify-between items-center transition-all border text-left relative focus:outline-none ${
-                            dayRecord 
-                              ? dayRecord.hasFailures 
-                                ? 'bg-rose-50 border-rose-300 hover:bg-rose-100 text-rose-900 hover:shadow-sm' 
-                                : 'bg-emerald-50/60 border-emerald-200 hover:bg-emerald-50 text-emerald-900 hover:shadow-sm'
-                              : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-400 hover:border-slate-300'
-                          } ${isSelected ? 'ring-2 ring-blue-600 ring-offset-2' : ''}`}
+                          className={`aspect-square rounded-xl p-2 flex flex-col justify-between items-center transition-all border text-left relative focus:outline-none cursor-pointer ${
+                            isMultiSelectMode && isCheckedInMulti
+                              ? 'bg-blue-100/90 border-blue-500 ring-2 ring-blue-500 text-blue-950 shadow-xs'
+                              : dayRecord 
+                                ? dayRecord.hasFailures 
+                                  ? 'bg-rose-50 border-rose-300 hover:bg-rose-100 text-rose-900 hover:shadow-sm' 
+                                  : 'bg-emerald-50/60 border-emerald-200 hover:bg-emerald-50 text-emerald-900 hover:shadow-sm'
+                                : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-400 hover:border-slate-300'
+                          }`}
                           id={`calendar-day-btn-${dayNumber}`}
                         >
-                          {/* Calendar date tag digits */}
-                          <span className="text-xs font-black font-mono self-start">{dayNumber}</span>
+                          {/* Calendar date tag digits & multi-select checkbox */}
+                          <div className="w-full flex items-center justify-between">
+                            <span className="text-xs font-black font-mono self-start">{dayNumber}</span>
+                            {isMultiSelectMode && (
+                              <input
+                                type="checkbox"
+                                checked={isCheckedInMulti}
+                                onChange={() => {}}
+                                className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 pointer-events-none"
+                              />
+                            )}
+                          </div>
                           
                           {/* Quick visual badge indicator */}
                           {dayRecord ? (
                             dayRecord.hasFailures ? (
-                              <span className="w-5 h-5 rounded-full bg-rose-600 text-white flex items-center justify-center text-[10px] font-black shadow-sm shrink-0">
+                              <span className="w-5 h-5 rounded-full bg-rose-600 text-white flex items-center justify-center text-[10px] font-black shadow-sm shrink-0" title="พบจุดขัดข้อง / ไม่ผ่านเกณฑ์ (คลิกเพื่อดูและแก้ไข)">
                                 !
                               </span>
                             ) : (
-                              <span className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-black shadow-sm shrink-0">
+                              <span className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-black shadow-sm shrink-0" title="ผ่านเกณฑ์ครบถ้วน (คลิกเพื่อดูรายละเอียด)">
                                 ✓
                               </span>
                             )
@@ -1649,7 +1933,7 @@ export default function App() {
                   </div>
 
                   <p className="text-[11px] text-slate-400 text-center mt-5">
-                    * วันที่มีประวัติบันทึก QC จะแสดงสัญลักษณ์ ✓ และ ! กำกับอยู่บนปฏิทินมาตรฐานของแต่ละเครื่อง
+                    * คลิกที่วันที่มีประวัติ (✓ หรือ !) เพื่อเปิดหน้าต่างดูรายละเอียดและแก้ไขข้อมูลเฉพาะวัน หรือเปิดโหมดติ๊กเลือกหลายวันเพื่อลงข้อมูลย้อนหลัง
                   </p>
                 </div>
               </div>
@@ -1698,6 +1982,7 @@ export default function App() {
                       ))}
                       <th className="py-3 px-4">สถานะภาพรวม</th>
                       <th className="py-3 px-4 max-w-xs truncate">หมายเหตุ/ข้อร้องขอ</th>
+                      <th className="py-3 px-4 text-center">การจัดการ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-150 text-slate-700 font-sans">
@@ -1733,12 +2018,37 @@ export default function App() {
                         <td className="py-3 px-4 font-sans text-slate-500 max-w-xs truncate" title={rec.notes}>
                           {rec.notes || '—'}
                         </td>
+                        <td className="py-3 px-4 text-center">
+                          <div className="flex items-center justify-center space-x-1">
+                            <button
+                              onClick={() => setViewingDayRecord(rec)}
+                              className="p-1.5 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors cursor-pointer"
+                              title="ดูรายละเอียดฉบับเต็ม"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleEditRecord(rec)}
+                              className="p-1.5 text-amber-600 hover:bg-amber-100 rounded-lg transition-colors cursor-pointer"
+                              title="แก้ไขข้อมูลเฉพาะวันนี้"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteRecord(rec.date, rec.machine || 'general')}
+                              className="p-1.5 text-rose-600 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer"
+                              title="ลบข้อมูลวันนี้"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                     
                     {currentMonthRecords.length === 0 && (
                       <tr>
-                        <td colSpan={5 + (selectedMachine === 'portable' ? PORTABLE_QC_ITEMS : GENERAL_QC_ITEMS).length} className="py-12 text-center text-slate-400 font-medium">
+                        <td colSpan={6 + (selectedMachine === 'portable' ? PORTABLE_QC_ITEMS : GENERAL_QC_ITEMS).length} className="py-12 text-center text-slate-400 font-medium">
                           ไม่มีข้อมูลบันทึกในเดือนนี้
                         </td>
                       </tr>
@@ -2172,6 +2482,32 @@ export default function App() {
         initialDate={sigModalType === 'operator' ? operatorDate : physicistDate}
         title={sigModalType === 'operator' ? 'ลงลายมือชื่อผู้ร่วมรับผิดชอบประจำวัน' : 'ผู้รับรองสถิติ (Physicist) สรุปประจำเดือน'}
         roleLabel={sigModalType === 'operator' ? 'เจ้าพนักงาน / พนักงานการแพทย์และรังสีเทคนิคผู้ส่งประเมิน (โรงพยาบาลแม่ทา)' : 'หัวหน้างานรังสีวิทยา (Physicist / Medical Physicist)'}
+      />
+
+      {/* Single-Day Inspection Full Detail & Edit Modal */}
+      <DayDetailModal
+        isOpen={!!viewingDayRecord}
+        onClose={() => setViewingDayRecord(null)}
+        record={viewingDayRecord}
+        onEdit={(rec) => {
+          setViewingDayRecord(null);
+          handleEditRecord(rec);
+        }}
+        onDelete={(date, machine) => {
+          handleDeleteRecord(date, machine);
+          setViewingDayRecord(null);
+        }}
+      />
+
+      {/* Batch QC Record Modal for Multiple Missed Dates */}
+      <BatchRecordModal
+        isOpen={isBatchModalOpen}
+        onClose={() => setIsBatchModalOpen(false)}
+        selectedDates={selectedDates}
+        onRemoveDate={handleRemoveBatchDate}
+        defaultMachine={selectedMachine}
+        existingRecords={records}
+        onConfirmBatch={handleConfirmBatchSave}
       />
     </div>
   );
